@@ -1,0 +1,5 @@
+position,position_group,display_name,pitch_x,pitch_y,min_count,sort_order
+GK,GK,Goalkeeper,0.50,0.08,2,1
+DEF,DEF,Defender,0.50,0.32,4,2
+MID,MID,Midfield,0.50,0.58,3,3
+FWD,FWD,Forward,0.50,0.84,2,4

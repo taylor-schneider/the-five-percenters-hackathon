@@ -1,184 +1,139 @@
-"""Deterministic seed league.
+"""Load the supplied league from data/*.csv into the store.
 
-Seeded from a fixed random_state so every demo run produces the same league --
-you can point at a specific team and know what the pitch map will look like.
+This replaces the synthetic generator that stood in before real data arrived.
+The CSVs are read exactly once at startup; after that the store IS the league
+and execute() mutates it in place. A restart resets everything, which is what
+you want for repeated demo runs.
 
-The first team ("Riverside FC") is deliberately built with planted weaknesses so
-the Stage 1 dashboard has red circles and Stage 2 has obvious opportunities
-without anyone having to hunt for a good demo team.
+The source data gives six columns. Four things the API requires are absent and
+are derived here, all deterministically so a reload reproduces the league
+exactly:
+
+- ids          UUIDv5 from the CSV keys, so "MCI" is the same uuid every run
+- value_score  spread from the 4-10 integer rating into 0-100
+- age          required by PlayerRef, absent from the CSV
+- the market   no listings exist in the source data at all
 """
 
 from __future__ import annotations
 
-import random
-from uuid import uuid4
+import csv
+import hashlib
+from pathlib import Path
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from ..core.config import get_settings
-from ..models.enums import FORMATIONS, Position
+from ..models.enums import Position, group_of
 from .store import (
     MarketListingRecord,
     PlayerRecord,
+    RosterEntryRecord,
     Store,
     TeamRecord,
 )
 
-DEMO_TEAM_NAME = "Riverside FC"
+DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 
-_TEAM_NAMES = [
-    DEMO_TEAM_NAME,
-    "Northgate United",
-    "Ashford Rovers",
-    "Kestrel City",
-    "Blackwell Athletic",
-    "Harbour Point FC",
-    "Windmere Town",
-    "Sable Vale",
-    "Fenwick Albion",
-    "Granite Bay FC",
-    "Thornbury Wanderers",
-    "Cresthill United",
-]
-
-_FIRST = [
-    "T.", "K.", "M.", "J.", "L.", "R.", "D.", "S.", "A.", "N.",
-    "P.", "C.", "H.", "E.", "O.", "F.", "G.", "B.", "V.", "I.",
-]
-_LAST = [
-    "Alvarez", "Osei", "Nakamura", "Lindqvist", "Moreau", "Bianchi", "Kovac",
-    "Ferreira", "Okafor", "Vasquez", "Dimitrov", "Haugen", "Rossi", "Mbeki",
-    "Andersen", "Costa", "Novak", "Silva", "Jansen", "Petrov", "Aguirre",
-    "Bakker", "Cissokho", "Duarte", "Eriksen", "Fontaine", "Gallardo",
-    "Hernandez", "Ivanov", "Jokinen", "Kimura", "Laurent", "Marchetti",
-    "Nilsson", "Ortega", "Pavlov", "Quintero", "Ricci", "Sorensen", "Tanaka",
-]
-
-#: Roughly 24 players: the 10 formation slots plus depth, weighted so squads
-#: satisfy the default GK:2 / DEF:6 / MID:6 / FWD:4 minimums.
-_SQUAD_TEMPLATE: list[Position] = [
-    Position.GK, Position.GK,
-    Position.LB, Position.LB,
-    Position.CB, Position.CB, Position.CB, Position.CB,
-    Position.RB, Position.RB,
-    Position.CDM, Position.CDM,
-    Position.CM, Position.CM, Position.CM,
-    Position.CAM, Position.CAM,
-    Position.LW, Position.LW,
-    Position.ST, Position.ST, Position.ST,
-    Position.RW, Position.RW,
-]
-
-#: Baseline salary by position, before per-player variation.
-#:
-#: Calibrated against the 24-man template and the 50M cap: the template sums to
-#: ~37.7M of base salary, which lands a seeded squad around 41-43M once the
-#: per-player multiplier is applied. That leaves roughly 7-9M of headroom, which
-#: is what makes trades possible at all -- with a squad already over the cap,
-#: every single proposal fails BUDGET_CAP_EXCEEDED and the demo has nothing to
-#: show.
-_BASE_COST: dict[Position, int] = {
-    Position.GK: 1_100_000,
-    Position.LB: 1_200_000,
-    Position.CB: 1_400_000,
-    Position.RB: 1_200_000,
-    Position.CDM: 1_350_000,
-    Position.CM: 1_500_000,
-    Position.CAM: 1_900_000,
-    Position.LW: 1_800_000,
-    Position.ST: 2_350_000,
-    Position.RW: 1_800_000,
-}
+#: Fixed namespace, so ids survive a restart and a bookmarked team URL keeps
+#: working.
+NS = uuid5(NAMESPACE_URL, "https://five-percenters.hackathon/gm")
 
 
-def _player_name(rng: random.Random, used: set[str]) -> str:
-    for _ in range(200):
-        name = f"{rng.choice(_FIRST)} {rng.choice(_LAST)}"
-        if name not in used:
-            used.add(name)
-            return name
-    name = f"{rng.choice(_FIRST)} {rng.choice(_LAST)} {len(used)}"
-    used.add(name)
-    return name
+def stable_uuid(kind: str, key: str) -> UUID:
+    """Deterministic id from a CSV key. stable_uuid("team", "MCI") is constant."""
+    return uuid5(NS, f"{kind}:{key}")
 
 
-def seed_store(store: Store) -> Store:
-    """Populate `store` with a full league. Idempotent -- clears first."""
-    settings = get_settings()
-    rng = random.Random(settings.seed_random_state)
-    store.reset()
+def _jitter(seed: str, lo: float, hi: float) -> float:
+    """Deterministic value in [lo, hi) from a string seed."""
+    digest = hashlib.sha256(seed.encode()).digest()
+    return lo + (int.from_bytes(digest[:8], "big") / 2**64) * (hi - lo)
 
-    used_names: set[str] = set()
-    team_count = max(2, min(settings.seed_teams, len(_TEAM_NAMES)))
 
-    for team_index in range(team_count):
-        is_demo = team_index == 0
-        team = TeamRecord(
-            id=uuid4(),
-            name=_TEAM_NAMES[team_index],
-            budget_cap=50_000_000 if is_demo else rng.randrange(44, 58) * 1_000_000,
-        )
-        store.teams[team.id] = team
+def spread_value_score(rating: int, code: str) -> float:
+    """Turn the 4-10 integer value_rating into a 0-100 value_score.
 
-        for slot_index, position in enumerate(_SQUAD_TEMPLATE):
+    Seven distinct ratings across 150 players leaves percentiles heavily tied,
+    so each band is spread +/-4 points. The jitter is hashed off the player code
+    rather than taken from salary rank: tying value to salary would make
+    cost_efficiency partly self-fulfilling and blunt the "overpaid player"
+    signal the dashboard rests on. Bands stay 10 apart, so spreading never
+    reorders two players of different ratings.
+    """
+    return round(rating * 10 + _jitter(f"value:{code}", -4.0, 4.0), 1)
+
+
+def synth_age(code: str) -> int:
+    """Age is required by PlayerRef and absent from the CSV. Deterministic 19-35."""
+    return int(_jitter(f"age:{code}", 19, 36))
+
+
+def load_league(store: Store, data_dir: Path | None = None) -> Store:
+    """Populate an empty store from the CSVs."""
+    d = data_dir or DATA_DIR
+
+    with open(d / "clubs.csv", newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            team = TeamRecord(
+                id=stable_uuid("team", row["club_id"]),
+                name=row["club_name"],
+                budget_cap=int(row["salary_cap_gbp"]),
+                roster_version=1,
+            )
+            store.teams[team.id] = team
+            # max_squad_size is deliberately ignored: budget is the only cap.
+
+    with open(d / "players.csv", newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            code = row["player_id"]
+            position = Position(row["position"])
             player = PlayerRecord(
-                id=uuid4(),
-                name=_player_name(rng, used_names),
+                id=stable_uuid("player", code),
+                name=row["name"],
                 position=position,
-                age=rng.randint(19, 34),
-                appearances=rng.randint(4, 38),
+                age=synth_age(code),
             )
             store.players[player.id] = player
 
-            base = _BASE_COST[position]
-            cost = int(base * rng.uniform(0.55, 1.65))
-            value = round(rng.uniform(52.0, 88.0), 1)
-
-            # Planted weaknesses on the demo team: the first-choice CB and the
-            # starting ST are both overpaid and underperforming, which is what
-            # turns those circles red.
-            if is_demo and position in (Position.CB, Position.ST) and slot_index % 4 == 0:
-                cost = int(base * rng.uniform(1.35, 1.75))
-                value = round(rng.uniform(55.0, 63.0), 1)
-
-            store.add_roster_entry(
-                team_id=team.id,
+            entry = RosterEntryRecord(
+                id=stable_uuid("roster", code),
+                team_id=stable_uuid("team", row["club_id"]),
                 player_id=player.id,
                 position=position,
-                cost=cost,
-                value_score=value,
+                cost=int(row["annual_salary_gbp"]),
+                value_score=spread_value_score(int(row["value_rating"]), code),
             )
+            store.roster_entries[entry.id] = entry
 
-    # --- market listings ---------------------------------------------------
-    # Two sources: free agents, and squad players other teams have listed. Every
-    # listing's `cost` is the salary the player will carry once acquired (D1).
-    demo_team = next(t for t in store.teams.values() if t.name == DEMO_TEAM_NAME)
+    _withhold_star_players(store)
+    _build_market(store)
+    return store
 
-    for position in FORMATIONS["4-3-3"]:
-        for _ in range(rng.randint(3, 5)):
-            player = PlayerRecord(
-                id=uuid4(),
-                name=_player_name(rng, used_names),
-                position=position,
-                age=rng.randint(19, 32),
-                appearances=rng.randint(3, 38),
-            )
-            store.players[player.id] = player
-            base = _BASE_COST[position]
-            listing = MarketListingRecord(
-                id=uuid4(),
-                player_id=player.id,
-                source_team_id=None,
-                position=position,
-                cost=int(base * rng.uniform(0.5, 1.25)),
-                expected_value_score=round(rng.uniform(60.0, 92.0), 1),
-            )
-            store.listings[listing.id] = listing
 
-    # Some existing squad players from other teams are on the market too.
-    other_entries = [
-        e for e in store.all_current_entries() if e.team_id != demo_team.id
-    ]
-    rng.shuffle(other_entries)
-    for entry in other_entries[:40]:
+def _withhold_star_players(store: Store) -> None:
+    """Each club's single best player is not for sale.
+
+    Gives PLAYER_NOT_AVAILABLE something real to fire on, and stops the
+    Opportunity Finder proposing that every club sell its best asset.
+    """
+    best: dict[UUID, RosterEntryRecord] = {}
+    for entry in store.roster_entries.values():
+        current = best.get(entry.team_id)
+        if current is None or entry.value_score > current.value_score:
+            best[entry.team_id] = entry
+    for entry in best.values():
+        entry.available = False
+
+
+def _build_market(store: Store) -> None:
+    """The market does not exist in the source data -- derive it.
+
+    Every available roster player is listed by their current club. Per D9 the
+    counterparty's books are not updated on a trade; the listing is simply
+    consumed, so one listing per player is enough for v1.
+    """
+    for entry in store.roster_entries.values():
+        if not entry.available:
+            continue
         listing = MarketListingRecord(
             id=uuid4(),
             player_id=entry.player_id,
@@ -189,12 +144,31 @@ def seed_store(store: Store) -> Store:
         )
         store.listings[listing.id] = listing
 
-    return store
+
+def seed(store: Store) -> Store:
+    """Entry point used at app startup."""
+    return load_league(store)
 
 
-def demo_team_id(store: Store) -> str:
-    """Convenience for the /health payload and manual Swagger testing."""
-    for team in store.teams.values():
-        if team.name == DEMO_TEAM_NAME:
-            return str(team.id)
-    return ""
+#: Back-compat alias for the synthetic generator this module replaced.
+seed_store = seed
+
+#: The club the demo opens on. Brentford is the interesting one: smallest squad
+#: in the league, short at DEF against the minimum, and under its cap -- so the
+#: dashboard has a real coverage warning and Stage 2 has room to act on it.
+DEMO_CLUB_CODE = "BRE"
+
+
+def demo_team_id(store: Store | None = None) -> str:
+    """Team the UI lands on when no team is chosen. String, as the API returns it."""
+    return str(stable_uuid("team", DEMO_CLUB_CODE))
+
+
+def position_groups_of(store: Store, team_id: UUID) -> dict[str, int]:
+    """Squad headcount per position group -- handy for coverage checks."""
+    counts: dict[str, int] = {}
+    for entry in store.roster_entries.values():
+        if entry.team_id == team_id and entry.is_current:
+            key = group_of(entry.position).value
+            counts[key] = counts.get(key, 0) + 1
+    return counts

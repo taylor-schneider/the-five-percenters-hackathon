@@ -1,5 +1,9 @@
 """In-memory data store standing in for PostgreSQL.
 
+Records live in src/data_models/, one file each. This module owns access to
+them -- how they are queried and mutated -- and nothing else knows how the
+data is persisted.
+
 This is the ONLY module that knows how data is persisted. The HTTP contract in
 api.md is identical whether this is a dict or a database -- swapping in
 SQLAlchemy means reimplementing this file and nothing else.
@@ -12,105 +16,20 @@ response.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from ...data_models import (
+    IdempotencyRecord,
+    InsightRecord,
+    MarketListingRecord,
+    PlayerRecord,
+    RosterEntryRecord,
+    TeamRecord,
+    TradeRecordRow,
+    utcnow,
+)
 from ..models.enums import Position, PositionGroup, TradeStatus, group_of
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-# --------------------------------------------------------------------------
-# Records
-# --------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class TeamRecord:
-    id: UUID
-    name: str
-    budget_cap: int
-    roster_version: int = 1
-    created_at: datetime = field(default_factory=utcnow)
-
-
-@dataclass(slots=True)
-class PlayerRecord:
-    id: UUID
-    name: str
-    position: Position
-    age: int
-    appearances: int = 30
-    """League appearances. Drives confidence and the HIGH_UNCERTAINTY soft
-    violation -- a thin sample is a real risk, not a guess."""
-
-    @property
-    def position_group(self) -> PositionGroup:
-        return group_of(self.position)
-
-
-@dataclass(slots=True)
-class RosterEntryRecord:
-    id: UUID
-    team_id: UUID
-    player_id: UUID
-    position: Position
-    cost: int
-    value_score: float
-    available: bool = True
-    is_current: bool = True
-    effective_from: datetime = field(default_factory=utcnow)
-    effective_to: datetime | None = None
-
-
-@dataclass(slots=True)
-class MarketListingRecord:
-    id: UUID
-    player_id: UUID
-    source_team_id: UUID | None
-    position: Position
-    cost: int
-    expected_value_score: float
-    available: bool = True
-    updated_at: datetime = field(default_factory=utcnow)
-
-
-@dataclass(slots=True)
-class TradeRecordRow:
-    id: UUID
-    team_id: UUID
-    status: TradeStatus
-    initiated_by: str
-    source_opportunity_id: str | None
-    payload: dict[str, Any]
-    created_at: datetime = field(default_factory=utcnow)
-    executed_at: datetime | None = None
-
-
-@dataclass(slots=True)
-class InsightRecord:
-    id: UUID
-    team_id: UUID
-    agent_name: str
-    insight_type: str
-    severity: str
-    position: Position | None
-    player_id: UUID | None
-    summary: str
-    details: dict[str, Any]
-    created_at: datetime = field(default_factory=utcnow)
-
-
-@dataclass(slots=True)
-class IdempotencyRecord:
-    key: UUID
-    request_hash: str
-    response: dict[str, Any]
-    created_at: datetime = field(default_factory=utcnow)
 
 
 # --------------------------------------------------------------------------

@@ -9,18 +9,17 @@ from enum import StrEnum
 
 
 class Position(StrEnum):
-    """Specific pitch slot. Benchmarks are computed at this level (D5)."""
+    """Benchmark level (D5).
+
+    Collapsed to the four buckets the supplied data carries, so Position and
+    PositionGroup hold the same value. Both stay on the wire, so re-expanding
+    to specific slots later is a change to data/positions.csv, not to the API.
+    """
 
     GK = "GK"
-    RB = "RB"
-    CB = "CB"
-    LB = "LB"
-    CDM = "CDM"
-    CM = "CM"
-    CAM = "CAM"
-    LW = "LW"
-    RW = "RW"
-    ST = "ST"
+    DEF = "DEF"
+    MID = "MID"
+    FWD = "FWD"
 
 
 class PositionGroup(StrEnum):
@@ -100,15 +99,9 @@ class AgentName(StrEnum):
 #: clients never send a position_group.
 POSITION_GROUP: dict[Position, PositionGroup] = {
     Position.GK: PositionGroup.GK,
-    Position.RB: PositionGroup.DEF,
-    Position.CB: PositionGroup.DEF,
-    Position.LB: PositionGroup.DEF,
-    Position.CDM: PositionGroup.MID,
-    Position.CM: PositionGroup.MID,
-    Position.CAM: PositionGroup.MID,
-    Position.LW: PositionGroup.FWD,
-    Position.RW: PositionGroup.FWD,
-    Position.ST: PositionGroup.FWD,
+    Position.DEF: PositionGroup.DEF,
+    Position.MID: PositionGroup.MID,
+    Position.FWD: PositionGroup.FWD,
 }
 
 
@@ -119,31 +112,14 @@ def group_of(position: Position) -> PositionGroup:
 #: Normalised pitch coordinates per position for the Stage 1 pitch map.
 #: Origin is top-left; y=0 is the team's own goal line.
 PITCH_COORDINATES: dict[Position, tuple[float, float]] = {
-    Position.GK: (0.50, 0.06),
-    Position.LB: (0.15, 0.24),
-    Position.CB: (0.50, 0.20),
-    Position.RB: (0.85, 0.24),
-    Position.CDM: (0.50, 0.40),
-    Position.CM: (0.28, 0.50),
-    Position.CAM: (0.72, 0.50),
-    Position.LW: (0.18, 0.75),
-    Position.ST: (0.50, 0.84),
-    Position.RW: (0.82, 0.75),
+    Position.GK: (0.50, 0.08),
+    Position.DEF: (0.50, 0.32),
+    Position.MID: (0.50, 0.58),
+    Position.FWD: (0.50, 0.84),
 }
 
 #: Slot order for the default formation. v1 seeds everything as 4-3-3; adding a
 #: formation later is a data change, not a frontend change.
 FORMATIONS: dict[str, list[Position]] = {
-    "4-3-3": [
-        Position.GK,
-        Position.LB,
-        Position.CB,
-        Position.RB,
-        Position.CDM,
-        Position.CM,
-        Position.CAM,
-        Position.LW,
-        Position.ST,
-        Position.RW,
-    ],
+    "4-3-3": [Position.GK, Position.DEF, Position.MID, Position.FWD],
 }
