@@ -1,0 +1,14 @@
+# Soccer GM Trade Assistant — agent runtime dependencies
+# Install alongside requirements-api.txt:
+#
+#   pip install -r requirements-api.txt -r requirements-agents.txt
+#
+# The API runs without this file. Every agent entry point raises
+# AgentUnavailable when the SDK is missing, and the caller falls back to its
+# deterministic service (api.md D11, mode=heuristic).
+
+anthropic==1.7.0
+
+# Credentials, in the order the SDK resolves them:
+#   ANTHROPIC_API_KEY, then ANTHROPIC_AUTH_TOKEN, then an `ant auth login` profile.
+# Nothing in this package reads a key directly; the SDK does the resolving.
