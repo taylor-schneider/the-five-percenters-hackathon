@@ -1,0 +1,24 @@
+# Soccer GM Trade Assistant — API runtime dependencies
+# Python 3.11+
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate          (Windows)
+#   pip install -r requirements-api.txt
+#   uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+#
+# Swagger UI: http://localhost:8000/docs
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- Phase 2: swap the in-memory store for PostgreSQL ---
+# The repository layer (src/api/repositories/) is the only thing that changes.
+# sqlalchemy==2.0.36
+# psycopg[binary]==3.2.3
+# alembic==1.14.0
+
+# --- dev / test (install separately: pip install -r requirements-api-dev.txt) ---
+# pytest==8.3.4
+# httpx==0.28.1
